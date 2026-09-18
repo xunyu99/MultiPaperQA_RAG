@@ -1,0 +1,15 @@
+# Dependencies live in requirements.txt (installed per phase).
+# This file only holds tool config. No editable install, to avoid Windows packaging traps.
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]

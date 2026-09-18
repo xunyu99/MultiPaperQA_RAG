@@ -1,0 +1,26 @@
+# ---- 环境 ----
+.venv/
+venv/
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# ---- 密钥 ----
+.env
+.env.local
+
+# ---- 数据产物（保留占位文件）----
+storage/*
+!storage/.gitkeep
+*.db
+*.zip
+*.log
+
+# ---- 编辑器 ----
+.vscode/
+.idea/
+.DS_Store
