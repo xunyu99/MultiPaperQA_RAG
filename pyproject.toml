@@ -4,7 +4,10 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "-q"
+# --basetemp：pytest 默认把 tmp_path 建在系统 Temp 里
+# （C:\Users\<你>\AppData\Local\Temp\pytest-of-...），那个目录可能被别的进程
+# 写成只读 ACL，导致一堆 PermissionError。挪进工程目录就永远有写权限。
+addopts = "-q --basetemp=.pytest_tmp"
 
 [tool.ruff]
 line-length = 100

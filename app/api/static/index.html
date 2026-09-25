@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>多论文问答 · MultiPaperQA_RAG</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div class="app">
+    <!-- 左：会话。收起时只剩一条 48px 的图标栏 -->
+    <aside class="sidebar" id="sidebar">
+      <!-- 标题条：高度和原文栏头 / 对话栏头一致，三个栏的顶边才齐平 -->
+      <div class="sidebar-brand">
+        <span class="brand-mark" aria-hidden="true">阅</span>
+        <span class="brand-text">论文阅读助手</span>
+      </div>
+      <div class="sidebar-actions">
+        <button class="new-btn" id="new-session" title="新建会话">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <line x1="12" y1="5" x2="12" y2="19"></line>
+            <line x1="5" y1="12" x2="19" y2="12"></line>
+          </svg>
+          <span class="btn-text">新建会话</span>
+        </button>
+        <button class="icon-btn" id="sidebar-toggle" title="收起侧栏" aria-label="收起侧栏">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="3" y="4" width="18" height="16" rx="3"></rect>
+            <line x1="9" y1="4" x2="9" y2="20"></line>
+          </svg>
+        </button>
+      </div>
+      <div class="sidebar-body" id="sidebar-body">
+        <div class="sidebar-label">历史会话</div>
+        <div class="session-list" id="session-list"></div>
+      </div>
+    </aside>
+
+    <!-- 中：原文。默认收起；点证据卡时展开，可以拖宽 -->
+    <section class="pdf-pane collapsed" id="pdf-pane">
+      <div class="pdf-head">
+        <div class="pdf-meta">
+          <div class="pdf-title" id="pdf-title">原文</div>
+          <div class="muted" id="pdf-sub"></div>
+        </div>
+        <div class="pdf-tools">
+          <button class="btn btn-ghost" id="pdf-prev">上一页</button>
+          <span class="muted" id="pdf-page"></span>
+          <button class="btn btn-ghost" id="pdf-next">下一页</button>
+          <button class="icon-btn" id="pdf-close" title="收起原文" aria-label="收起原文">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <line x1="6" y1="6" x2="18" y2="18"></line>
+              <line x1="18" y1="6" x2="6" y2="18"></line>
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div class="pdf-body">
+        <div class="pdf-wrap" id="pdf-wrap">
+          <canvas id="pdf-canvas"></canvas>
+          <div class="pdf-overlay" id="pdf-overlay"></div>
+        </div>
+        <div class="pdf-empty" id="pdf-empty">点回答下面的证据卡，看它在原文的哪一页哪个位置。</div>
+      </div>
+    </section>
+
+    <div class="resizer" id="resizer" title="拖动调整原文宽度"></div>
+
+    <!-- 右：对话。上面是聊天记录，下面是输入区 -->
+    <main class="chat">
+      <header class="chat-head">
+        <div class="chat-title" id="chat-title">新会话</div>
+        <div class="health" id="health"><span class="dot dot-wait"></span>正在读库…</div>
+      </header>
+
+      <div class="messages" id="messages">
+        <div class="welcome" id="welcome">
+          <div class="welcome-title">问点什么</div>
+          <div class="muted">
+            先点下面的「范围」按钮挑论文，或者直接提问（问句里出现论文名会自动识别）。<br>
+            回答里的 <span class="cite">[E1]</span> 可以点，证据卡在回答下方，点卡片看原文。
+          </div>
+        </div>
+      </div>
+
+      <div class="composer">
+        <!-- 论文范围：平时只占一行（显示当前摘要），点开才展开面板。
+             论文多了以后，芯片墙会换行把聊天区挤上去 —— 见 PLAN Step 8c。 -->
+        <div class="scope-picker" id="scope-picker">
+          <button class="chip scope-btn" id="scope-summary" type="button">范围：全库</button>
+          <div class="scope-panel hidden" id="scope-panel">
+            <div class="scope-panel-head">
+              <input type="search" id="scope-search" placeholder="搜索论文（标题或 id）…">
+              <button class="btn btn-ghost" id="scope-all" type="button">全选</button>
+              <button class="btn btn-ghost" id="scope-clear" type="button">清空</button>
+            </div>
+            <div class="scope-list" id="scope-list"></div>
+            <div class="scope-panel-foot muted" id="scope-count"></div>
+          </div>
+        </div>
+        <div class="input-row">
+          <textarea id="question" rows="1"
+            placeholder="例如：PE-CLIP 训练用的 batch size 和学习率是多少？（Enter 发送，Shift+Enter 换行）"></textarea>
+          <button class="icon-btn" id="upload-btn" title="上传论文 PDF" aria-label="上传论文">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 16V4"></path>
+              <path d="M7 9l5-5 5 5"></path>
+              <path d="M4 17v2a2 2 0 002 2h12a2 2 0 002-2v-2"></path>
+            </svg>
+          </button>
+          <input type="file" id="file-input" accept="application/pdf" hidden>
+          <button class="btn btn-primary" id="ask-btn">发送</button>
+        </div>
+        <!-- 入库进度：只有两段（解析 / 切分），MinerU 不给更细的进度 -->
+        <div class="progress hidden" id="progress">
+          <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+          <span class="progress-label" id="progress-label"></span>
+        </div>
+        <div class="status" id="status"></div>
+      </div>
+    </main>
+  </div>
+
+  <!-- pdf.js 是前端唯一的 CDN 依赖：离线时页面照常能用，只是原文预览不可用 -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

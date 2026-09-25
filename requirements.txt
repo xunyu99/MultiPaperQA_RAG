@@ -8,20 +8,25 @@ pydantic>=2.9
 pydantic-settings>=2.5
 python-dotenv>=1.0
 openai>=1.50
+langchain-core>=1.0
+langchain-openai>=1.0
 httpx>=0.27
 tenacity>=9.0
 jieba>=0.42.1
 numpy>=1.26
 rich>=13.9
+pillow>=10.4
 pytest>=8.3
 
 # ---------- Uncomment when the phase starts ----------
+# Phase 3  vector store
+langchain-chroma>=1.0
+chromadb>=1.0
 # Phase 4  agent orchestration
 # langgraph>=1.0
 # Phase 5  local rerank / image handling
 # fastembed>=0.8
-# pillow>=10.4
 # Phase 6  API
-# fastapi>=0.115
-# uvicorn>=0.32
-# python-multipart>=0.0.12
+fastapi>=0.115
+uvicorn>=0.32
+python-multipart>=0.0.12

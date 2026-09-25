@@ -1,0 +1,1034 @@
+/* ======================================================================
+   换配色只改下面「1. 调色板」那一块 —— 其余所有规则只引用语义变量，
+   规则里**不出现任何硬编码颜色**（有测试守着，见 test_api.py 的
+   test_css_colors_live_in_variables）。
+
+   三层结构：
+     1. 调色板   —— 主题色 + 中性色，换主题就改这里
+     2. 语义变量 —— 把调色板映射到"这颜色是干什么用的"（栏/画布/主色/提示色…）
+     3. 规则     —— 只写 var(--语义名)
+   ====================================================================== */
+
+:root {
+  /* ---------- 1. 调色板 ---------- */
+  /* 4 个槽位：第 1 个最浅（栏的底色），第 3 个最浓（主色）。
+     换主题就把这 4 个换成新主题的 4 个色，下面的色阶会自动跟着变。 */
+  --color-peach: #FFB199;
+  --color-apricot: #FFD3A5;
+  --color-coral-pink: #FD6585;
+  --color-white: #FFFFFF;
+
+  /* 中间过渡色：界面需要"比浅色深一档、比主色浅一档"的颜色（描边、浅底徽标、选中项）。
+     与其再手挑一个，不如从两个主题色推导 —— 换主题时依然只改上面那几行。 */
+  --color-melba: color-mix(in srgb, var(--color-apricot) 45%, var(--color-coral-pink));
+
+  /* 备选几套（整段替换上面 3 个主题色即可）：
+       薰衣草紫  #F8E8EE  #E8C5D0  #9B72CF
+       海洋蓝    #E7F0F7  #BFD8E8  #2F6FEB
+       森林绿    #E9F2EC  #C2DACB  #2E7D5B
+       石墨灰    #EDEEF1  #CFD3DA  #3D4756
+
+     中性色跟着主题的冷暖走：现在是暖褐调，配橘粉不打架。 */
+  --color-ink: #3B2A2E;
+  /* 带一点暖褐的深色，比纯黑柔和 */
+  --color-mist: #FFF8F4;
+  /* 想让聊天区带一点点暖色就拿它当 --canvas */
+  --color-line: #F7DFD5;
+  /* 描边：peach 调淡 */
+  --color-amber: #A85B22;
+  /* 警告：刻意不跟主题走，警示要有辨识度 */
+  --color-amber-soft: #FBEFE2;
+  --color-moss: #47795E;
+  /* 成功 */
+
+  /* ---------- 2. 语义变量 ---------- */
+  /* 明暗关系（整套配色的骨架）：
+       --surface-*  侧栏 / 顶栏 / 输入区 —— **担色**，主题色在这里体现
+       --canvas     聊天区 / 原文区       —— **更浅**，内容要干净、久看不累
+       --panel      浮起来的东西（卡片、弹层、按钮、输入框）—— 最亮，压在上面
+     所以规则里凡是"栏"就用 --surface-*，"内容区"就用 --canvas。 */
+  /* --canvas: var(--color-white); */
+  /* 换成 #FFF8F4，一点点暖 */
+  --canvas: var(--color-mist);
+  --panel: var(--color-white);
+
+  /* 三块栏各自的着色。**首尾相接**，绕一圈看是连续的渐变，而不是三张色卡拼起来：
+       --tint-a 同时是「侧栏顶部」和「顶栏左端」
+       --tint-c 同时是「顶栏右端」和「底栏右端」
+       --tint-d 同时是「侧栏底部」和「底栏左端」
+     改深浅只改这 4 个百分比；想反方向就把下面两个 linear-gradient 的角度对调。 */
+  --tint-a: color-mix(in srgb, var(--color-peach) 62%, var(--color-white));
+  --tint-b: color-mix(in srgb, var(--color-apricot) 72%, var(--color-white));
+  --tint-c: color-mix(in srgb, var(--color-melba) 34%, var(--color-white));
+  --tint-d: color-mix(in srgb, var(--color-coral-pink) 32%, var(--color-white));
+
+  --surface: var(--tint-a);
+  /* 栏的基础色（不想用渐变的地方用它） */
+  --surface-rail: linear-gradient(180deg, var(--tint-a), var(--tint-c) 62%, var(--tint-d));
+  --surface-head: linear-gradient(90deg, var(--tint-a), var(--tint-b) 45%, var(--tint-c));
+  --surface-foot: linear-gradient(90deg, var(--tint-d), var(--tint-b) 55%, var(--tint-c));
+  --bg: var(--tint-a);
+
+  --ink: var(--color-ink);
+  --ink-soft: color-mix(in srgb, var(--color-ink) 58%, var(--color-white));
+  --line: var(--color-line);
+  --hover: color-mix(in srgb, var(--color-apricot) 45%, var(--color-white));
+
+  --accent: var(--color-coral-pink);
+  /* 主色 #FD6585 压白字对比度只有 ~2.7:1，做按钮底勉强、做小字不行。
+     所以拆两个：--accent-strong 给需要压白字的底，--accent-ink 给浅底上的小字。 */
+  --accent-strong: color-mix(in srgb, var(--color-coral-pink) 78%, var(--color-ink));
+  --accent-ink: color-mix(in srgb, var(--color-coral-pink) 62%, var(--color-ink));
+  --accent-soft: color-mix(in srgb, var(--color-apricot) 45%, var(--color-white));
+  --accent-line: color-mix(in srgb, var(--color-melba) 45%, var(--color-white));
+
+  --user-bg: color-mix(in srgb, var(--color-peach) 42%, var(--color-white));
+  --warn: var(--color-amber);
+  --warn-soft: var(--color-amber-soft);
+  --ok: var(--color-moss);
+  --idle: var(--color-melba);
+
+  /* 着色底上的悬停：用半透明白提亮，而不是再叠一层灰（叠灰会脏） */
+  --hover-on-tint: color-mix(in srgb, var(--color-white) 55%, transparent);
+
+  /* PDF 高亮：在白色纸面上要跳出来 */
+  --hl-bg: color-mix(in srgb, var(--color-coral-pink) 38%, transparent);
+  --hl-border: color-mix(in srgb, var(--color-coral-pink) 72%, var(--color-ink));
+
+  /* ---------- 3. 形状与阴影 ---------- */
+  --radius: 10px;
+  /* 顶栏高度：侧栏标题条 / 原文栏头 / 对话栏头**必须一样高**，
+     否则三个栏的顶边参差不齐（实测过）。改动只改这一个数。 */
+  --bar-height: 56px;
+  --shadow-card: 0 2px 10px color-mix(in srgb, var(--color-ink) 12%, transparent);
+  --shadow-pop: 0 10px 30px color-mix(in srgb, var(--color-ink) 16%, transparent);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.65 -apple-system, "Segoe UI", "Microsoft YaHei", Roboto, sans-serif;
+  overflow: hidden;
+}
+
+.app {
+  display: flex;
+  height: 100vh;
+  width: 100%;
+}
+
+/* ---------------- 左：会话栏 ---------------- */
+.sidebar {
+  width: 260px;
+  flex: 0 0 auto;
+  background: var(--surface-rail);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  transition: width .16s ease;
+  overflow: hidden;
+}
+
+.sidebar.collapsed {
+  width: 48px;
+}
+
+/* 标题条：高度和另外两个顶栏一致，底下那条线才能连成一条 */
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: var(--bar-height);
+  padding: 0 10px;
+  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+}
+
+.brand-mark {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  border-radius: 7px;
+  background: var(--accent);
+  color: var(--color-white);
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.brand-text {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sidebar.collapsed .sidebar-brand {
+  justify-content: center;
+  padding: 0;
+}
+
+.sidebar.collapsed .brand-text {
+  display: none;
+}
+
+.sidebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 8px;
+}
+
+.sidebar.collapsed .sidebar-actions {
+  flex-direction: column;
+  padding: 6px 0;
+}
+
+.new-btn {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.new-btn:hover {
+  border-color: var(--accent-line);
+  background: var(--hover-on-tint);
+}
+
+.new-btn svg {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1.8;
+  stroke-linecap: round;
+}
+
+.sidebar.collapsed .new-btn {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  justify-content: center;
+}
+
+.sidebar.collapsed .new-btn .btn-text {
+  display: none;
+}
+
+.sidebar-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 8px 12px;
+}
+
+.sidebar.collapsed .sidebar-body {
+  display: none;
+}
+
+.sidebar-label {
+  color: var(--ink-soft);
+  font-size: 12px;
+  font-weight: 600;
+  padding: 4px 6px;
+}
+
+.session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.session {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+
+.session:hover {
+  background: var(--hover-on-tint);
+}
+
+.session.active {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.session-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-del {
+  opacity: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  color: var(--ink-soft);
+  font-size: 15px;
+  line-height: 1;
+  padding: 2px 4px;
+}
+
+.session:hover .session-del {
+  opacity: 1;
+}
+
+.session-del:hover {
+  color: var(--warn);
+}
+
+.session-empty {
+  color: var(--ink-soft);
+  font-size: 12px;
+  padding: 6px;
+}
+
+/* ---------------- 中：原文 ---------------- */
+.pdf-pane {
+  flex: 0 0 auto;
+  width: 42%;
+  min-width: 0;
+  background: var(--canvas);
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.pdf-pane.collapsed {
+  display: none;
+}
+
+.pdf-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  height: var(--bar-height);
+  padding: 0 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-head);
+  /* 原文栏和对话栏是两个元素，各自画 90deg 渐变会在接缝处断成两段色阶。
+     `background-attachment: fixed` 让渐变**相对视口**绘制 —— 两个元素取到的是
+     同一条渐变的相邻切片，接缝处因此连续。 */
+  background-attachment: fixed;
+}
+
+/* 标题和第二行放同一行，才能塞进固定的栏高 */
+.pdf-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.pdf-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 第二行（E2 · 章节名）：**必须一行**，否则被挤成一条窄柱、按字换行。
+   截断交给左边的标题先发生（标题 flex:1 + min-width:0）。 */
+.pdf-sub {
+  flex: 0 1 auto;
+  max-width: 45%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pdf-tools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.pdf-body {
+  flex: 1;
+  overflow: auto;
+  padding: 12px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+}
+
+.pdf-wrap {
+  position: relative;
+  line-height: 0;
+}
+
+.pdf-wrap canvas {
+  max-width: 100%;
+  box-shadow: var(--shadow-card);
+}
+
+.pdf-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.hl {
+  position: absolute;
+  background: var(--hl-bg);
+  border: 1.5px solid var(--hl-border);
+  border-radius: 3px;
+}
+
+.pdf-empty {
+  color: var(--ink-soft);
+  padding: 40px 20px;
+  text-align: center;
+}
+
+.resizer {
+  width: 5px;
+  cursor: col-resize;
+  background: transparent;
+  flex: 0 0 auto;
+}
+
+.resizer:hover {
+  background: var(--accent-soft);
+}
+
+.resizer.hidden {
+  display: none;
+}
+
+/* ---------------- 右：对话 ---------------- */
+.chat {
+  flex: 1 1 auto;
+  min-width: 320px;
+  display: flex;
+  flex-direction: column;
+  background: var(--canvas);
+}
+
+.chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  height: var(--bar-height);
+  padding: 0 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface-head);
+  background-attachment: fixed;
+  flex: 0 0 auto;
+}
+
+.chat-title {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.health {
+  color: var(--ink-soft);
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.dot-ok {
+  background: var(--ok);
+}
+
+.dot-bad {
+  background: var(--warn);
+}
+
+.dot-wait {
+  background: var(--idle);
+}
+
+.messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px 16px 8px;
+}
+
+.welcome {
+  max-width: 640px;
+  margin: 8vh auto 0;
+  text-align: center;
+}
+
+.welcome-title {
+  font-size: 20px;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.msg {
+  max-width: 760px;
+  margin: 0 auto 18px;
+}
+
+.msg-user {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.msg-user .bubble {
+  background: var(--user-bg);
+  border-radius: 12px 12px 2px 12px;
+  padding: 8px 14px;
+  max-width: 76%;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.msg-assistant .answer {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.8;
+}
+
+.msg-note {
+  color: var(--ink-soft);
+  font-size: 12px;
+  margin: 6px 0;
+}
+
+/* 档位徽标（Step 9）：**只有 unknown 会出现**。措辞由 citations.unknown_reason 决定
+   （不在范围 / 库里没有 / 依据不足 / 生成失败），所以这里只管样式、不写文案。
+   闲聊不是"没答上来"，用中性色，别跟拒答一样报警。 */
+.mode-badge {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-radius: 5px;
+  padding: 1px 8px;
+  margin-bottom: 6px;
+}
+
+.mode-badge.mode-chitchat {
+  color: var(--ink-soft);
+  background: var(--hover);
+}
+
+.cite {
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  border-radius: 4px;
+  padding: 0 4px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.cite:hover {
+  background: var(--accent-line);
+}
+
+.cite.empty {
+  background: var(--hover);
+  color: var(--ink-soft);
+  cursor: default;
+}
+
+/* 证据卡：**内联在回答下面**（不占额外一栏，视线是"回答 -> 证据 -> 原文"一条线） */
+.evidence {
+  margin-top: 10px;
+  border-top: 1px dashed var(--line);
+  padding-top: 8px;
+}
+
+.evidence-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--ink-soft);
+  font-size: 13px;
+  user-select: none;
+}
+
+.evidence-head:hover {
+  color: var(--ink);
+}
+
+.evidence-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.evidence.collapsed .evidence-list {
+  display: none;
+}
+
+.card {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  background: var(--panel);
+  transition: border-color .12s, background .12s;
+}
+
+.card:hover {
+  border-color: var(--accent-line);
+}
+
+.card.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  flex-wrap: wrap;
+}
+
+.label {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+
+.card-meta {
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.card-paper {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+
+.card-text {
+  font-size: 13px;
+  color: var(--ink);
+  opacity: .88;
+  max-height: 120px;
+  overflow: hidden;
+}
+
+.card-assets {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* 证据卡里的图缩略图：模型已经看过这张图了，用户也该能对上号。
+   点它跟点卡片一样 → 跳原文那一页（同一个 onclick，不另绑）。 */
+.card-figures {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.card-figure {
+  height: 64px;
+  max-width: 100%;
+  object-fit: contain;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--panel);
+}
+
+.asset {
+  font-size: 12px;
+  color: var(--warn);
+  background: var(--warn-soft);
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+
+/* 输入区：范围选择器 + 输入框 + 上传 */
+.composer {
+  border-top: 1px solid var(--line);
+  background: var(--surface-foot);
+  padding: 10px 16px 14px;
+  flex: 0 0 auto;
+}
+
+.composer>.scope-picker,
+.composer>.input-row,
+.composer>.progress,
+.composer>.status {
+  max-width: 760px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.input-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+.input-row textarea {
+  flex: 1;
+  resize: none;
+  min-height: 44px;
+  max-height: 160px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  font: inherit;
+  color: var(--ink);
+  background: var(--panel);
+}
+
+.input-row textarea:focus {
+  outline: 2px solid var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.btn {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink);
+  padding: 8px 14px;
+  border-radius: 8px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.btn:hover {
+  border-color: var(--accent-line);
+  background: var(--hover-on-tint);
+}
+
+.btn:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+  color: var(--color-white);
+}
+
+.btn-primary:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.btn-ghost {
+  background: transparent;
+}
+
+.icon-btn {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+}
+
+.icon-btn:hover {
+  background: var(--hover-on-tint);
+  border-color: var(--line);
+}
+
+.icon-btn:disabled {
+  opacity: .45;
+  cursor: not-allowed;
+}
+
+.icon-btn svg {
+  width: 19px;
+  height: 19px;
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1.7;
+  stroke-linecap: round;
+}
+
+.status {
+  min-height: 18px;
+  margin-top: 8px;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+/* 入库进度条（两段：解析 -> 切分） */
+.progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.progress.hidden {
+  display: none;
+}
+
+.progress-track {
+  flex: 1;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--hover-on-tint);
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: var(--accent);
+  transition: width .3s ease;
+}
+
+.progress.failed .progress-fill {
+  background: var(--warn);
+}
+
+.progress-label {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.status.error {
+  color: var(--warn);
+}
+
+.steps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--ink-soft);
+}
+
+.step.done {
+  color: var(--ok);
+}
+
+.step.failed {
+  color: var(--warn);
+}
+
+.muted {
+  color: var(--ink-soft);
+  font-weight: 400;
+  font-size: 12px;
+}
+
+/* ---------------- 范围选择器 ---------------- */
+.scope-picker {
+  position: relative;
+  display: flex;
+  margin-bottom: 8px;
+}
+
+.chip {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--ink-soft);
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chip:hover {
+  border-color: var(--accent-line);
+}
+
+.chip.on {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.scope-btn {
+  max-width: none;
+}
+
+.scope-panel {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  width: min(520px, 78vw);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow-pop);
+  padding: 10px;
+}
+
+.scope-panel.hidden {
+  display: none;
+}
+
+.scope-panel-head {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.scope-panel-head input {
+  flex: 1;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink);
+  background: var(--panel);
+}
+
+.scope-panel-head input:focus {
+  outline: 2px solid var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.scope-list {
+  max-height: 300px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.scope-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.scope-item:hover {
+  background: var(--hover);
+}
+
+.scope-item input {
+  margin-top: 4px;
+  flex: 0 0 auto;
+  accent-color: var(--accent);
+}
+
+.scope-item-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.scope-item-title {
+  font-size: 13px;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 行尾的删除按钮：**故意做得不显眼**（灰、低透明，悬停到这一行才亮）。
+   它是破坏性操作，不该跟勾选框抢注意力；但也**不做成 hover 才出现** ——
+   看不到的按钮被误点更糟（点下去会弹确认框）。 */
+.scope-del {
+  flex: 0 0 auto;
+  margin-left: auto;
+  border: none;
+  background: transparent;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: .4;
+}
+
+.scope-item:hover .scope-del {
+  opacity: 1;
+}
+
+.scope-del:hover {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.scope-panel-foot {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+@media (max-width: 1200px) {
+  .pdf-pane {
+    width: 46%;
+  }
+}
