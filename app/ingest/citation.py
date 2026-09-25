@@ -46,6 +46,7 @@ _BROKEN_URL = re.compile(r"(https?)\s*:\s*/\s*/", re.IGNORECASE)
 _MD_ESCAPE = re.compile(r"\\([\\*_`\[\]\(\)#+\-.!])")
 # 出版年份
 _YEAR = re.compile(r"\b(?:19|20)\d{2}\b")
+_EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]*\w")
 # 会议名："In Proceedings of the 33rd ACM International Conference on Multimedia (MM '25)"
 _VENUE = re.compile(r"\bIn\s+[^,]*?\([^)]*\)")
 # 看起来像正文段落的开头（摘要没被识别成标题时，用来收住作者段）
@@ -107,6 +108,42 @@ def author_block_ids(blocks: list[dict[str, Any]]) -> set[str]:
     ordered = sorted(blocks, key=lambda b: b.get("order_index") or 0)
     rows, _ = _author_blocks(ordered)
     return {row["block_id"] for row in rows}
+
+
+def strip_author_lines(text: str) -> str:
+    """剔除含邮箱的行 —— 给 `index_text` 用，`content` 不动。
+
+    为什么需要（2026-09-25 决定，PLAN B20 的"方案 b"）：MinerU 会把**摘要正文和作者
+    联系信息并进同一个块**（实测 `pe-clip:c0002`，章节头是 `(preamble) abstract`，
+    里面塞着 Authors' Contact Information 和一串邮箱）。这种块不是纯作者块，
+    `author_block_ids` 的按块判据抓不到，于是作者行占掉这块约一半 token，
+    把摘要向量稀释掉 —— 这正是 B20 想解决的问题本身。
+
+    判据只留一条：**行内有邮箱**。姓名和单位挤在同一行、没有可靠分隔符，靠词表迟早会漂；
+    邮箱是这里最稳定的结构信号。代价可控：正文里出现邮箱极少，真误删也只影响检索索引 ——
+    `content` 原文保留，引用和回答照样看得到作者。
+
+    整段都被剔光时**原样返回**：宁可留一点噪声，也不能让索引文本变成空。
+    """
+    kept = [line for line in text.splitlines() if not _EMAIL.search(line)]
+    if not any(line.strip() for line in kept):
+        return text
+    return "\n".join(kept)
+
+
+def is_author_contact_block(text: str) -> bool:
+    """块里出现邮箱地址 → 判为作者联系/单位块，`index_text` 剔掉、`content` 保留。
+
+    这是"方案 b"的主力判据，因为实测里作者联系信息**常常自己就是一整块**：
+    `pe-clip:b00009`（632 字符的 "Authors' Contact Information: …"）、
+    `4:b00011/b00012`（作者单位 + e-mail）、`facecaption-15m:b00020`（844 字符）。
+    它们有两个共同特征：**单行长文本**（>300 字符）+ **含邮箱** —— 这正好让
+    `_author_blocks` 的长度阈值把它们当正文收住，于是整块漏进索引。
+
+    实测全库只有 19 个块命中邮箱，逐块看过：全部是作者/单位/ACM 版权样板，
+    没有一处正文被误伤。整篇论文的正文从来不写邮箱。
+    """
+    return bool(_EMAIL.search(text or ""))
 
 
 def _author_blocks(ordered: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str | None]:

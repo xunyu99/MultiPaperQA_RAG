@@ -21,6 +21,8 @@ Step 9 之后多两个量：**拒答的 reason 命不命中**（`reason_accuracy
 
 from __future__ import annotations
 
+import re
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -54,6 +56,14 @@ class Outcome:
     # 模型原始输出（没被降级/剥标记处理过）。落盘诊断用：对比它和 answer 就知道
     # 这一轮到底是拒答、还是被降级了。指标不使用它。
     raw_answer: str = ""
+    # 要点命中率用的必含事实点。每项是字符串（单一写法）或字符串列表（任一同义写法命中即算），
+    # 见 EVAL_PLAN §2.1。拒答题为空。
+    keypoints: list[Any] = field(default_factory=list)
+    # 分层与难度：分层的指标单独出（全局题看 rerank，图表题看资产注入）
+    layer: str = ""
+    difficulty: str = ""
+    # 参考答案：只喂给 correctness 裁判，不进机械指标（裁判在 M2 接）
+    reference: str | None = None
 
     @property
     def insufficient(self) -> bool:
@@ -84,7 +94,16 @@ class Report:
     refusal_cited: int = 0
     # 两道拒绝题的 reason 命中率（标了 expect_reason 的题才有数）
     reason_accuracy: float | None = None
+    # 首个 gold 命中排名的倒数均值。Recall 只看"有没有进 top-k"，
+    # MRR 才看得出"第一条是不是就对了" —— rerank 的价值主要在这里显形。
+    mrr_at_k: float | None = None
+    # 要点命中率：每题命中 keypoints 数 ÷ 该题 keypoints 总数，再按题平均。
+    # 检索对了但答不出关键数字，就是生成层的问题 —— Recall 看不见这一层。
+    keypoint_rate: float | None = None
+    # 要点没答全的题（人工复核清单，不与 fails 混在一起）
+    keypoint_misses: list[str] = field(default_factory=list)
     by_type: dict[str, dict[str, float | None]] = field(default_factory=dict)
+    by_layer: dict[str, dict[str, float | None]] = field(default_factory=dict)
     fails: list[str] = field(default_factory=list)
 
 
@@ -114,6 +133,68 @@ def hits_gold(outcome: Outcome, k: int) -> bool | None:
         if not any(matched(target) for target in candidates):
             return False
     return True
+
+
+def _matches(hit: Any, target: dict[str, str]) -> bool:
+    return (
+        hit.paper.get("paper_id") == target["paper_id"]
+        and target["section"] in (hit.section_title or "")
+    )
+
+
+def first_gold_rank(outcome: Outcome, k: int) -> int | None:
+    """第一个命中 gold 的排名（1 起）；没命中返回 None。没标 gold 的题也返回 None。
+
+    跨论文题要求"每篇都有代表"，所以取**所有论文都到齐**的位置（各篇首个命中的最大排名）——
+    只算第一篇中不算过，那正是 `require_all_papers` 要考的东西。
+    """
+    if not outcome.gold:
+        return None
+    top = outcome.hits[:k]
+
+    if not outcome.require_all_papers:
+        for rank, hit in enumerate(top, 1):
+            if any(_matches(hit, target) for target in outcome.gold):
+                return rank
+        return None
+
+    arrived: dict[str, int] = {}
+    for rank, hit in enumerate(top, 1):
+        for target in outcome.gold:
+            if _matches(hit, target):
+                arrived.setdefault(target["paper_id"], rank)
+    needed = {target["paper_id"] for target in outcome.gold}
+    if not needed <= set(arrived):
+        return None
+    return max(arrived[paper_id] for paper_id in needed)
+
+
+def _normalize_for_match(text: str) -> str:
+    """匹配前的归一化：NFKC（全角→半角）+ casefold + 空白折叠。
+
+    故意**不做同义词替换** —— 数字的写法差异（`2e-4` / `2×10^-4`）交给 keypoints 的
+    备选写法列表去覆盖，而不是写成一条越来越聪明的正则（那种规则最后没人敢改）。
+    """
+    normalized = unicodedata.normalize("NFKC", text or "").casefold()
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def keypoint_score(outcome: Outcome) -> tuple[int, int] | None:
+    """(命中条数, 总条数)；这道题没标 keypoints 返回 None。"""
+    keypoints = outcome.keypoints or []
+    if not keypoints:
+        return None
+    answer = _normalize_for_match(outcome.answer)
+    hit = 0
+    for item in keypoints:
+        alternatives = item if isinstance(item, (list, tuple)) else [item]
+        if any(
+            _normalize_for_match(str(alt)) in answer
+            for alt in alternatives
+            if str(alt).strip()
+        ):
+            hit += 1
+    return hit, len(keypoints)
 
 
 def is_ungrounded(outcome: Outcome) -> bool:
@@ -147,6 +228,13 @@ def evaluate(
     report.recall_at_k = _rate(
         [hits_gold(o, k) for o in outcomes if hits_gold(o, k) is not None]
     )
+    # MRR：**没命中的题按 0 计**（分母是"所有标了 gold 的题"），否则"少算几道"会把分数抬高
+    golded = [o for o in outcomes if o.gold]
+    if golded:
+        reciprocal = [
+            1.0 / rank if (rank := first_gold_rank(o, k)) else 0.0 for o in golded
+        ]
+        report.mrr_at_k = sum(reciprocal) / len(reciprocal)
     if not retrieval_only:
         report.citation_rate = _rate(
             [bool(o.citations.cited) for o in outcomes if not o.expect_insufficient]
@@ -166,17 +254,41 @@ def evaluate(
         report.reason_accuracy = _rate(
             [o.unknown_reason == o.expect_reason for o in outcomes if o.expect_reason]
         )
+        # 要点命中率：每题的**比例**再取平均 —— 这样 3 个要点全错和 3 个错 2 个不会同权
+        scores = [score for o in outcomes if (score := keypoint_score(o)) is not None]
+        if scores:
+            report.keypoint_rate = sum(hit / total for hit, total in scores) / len(scores)
+            report.keypoint_misses = [
+                o.question_id
+                for o in outcomes
+                if (score := keypoint_score(o)) is not None and score[0] < score[1]
+            ]
 
     for qtype in sorted({o.qtype for o in outcomes}):
         group = [o for o in outcomes if o.qtype == qtype]
         report.by_type[qtype] = {
             "count": float(len(group)),
             "recall": _rate([hits_gold(o, k) for o in group]),
+            "mrr": _mrr(group, k),
             "citation": None if retrieval_only else _rate(
                 [bool(o.citations.cited) for o in group if not o.expect_insufficient]
             ),
             "ungrounded": None if retrieval_only else _rate([is_ungrounded(o) for o in group]),
             "unknown": None if retrieval_only else _rate([o.insufficient for o in group]),
+            "keypoints": None if retrieval_only else _keypoint_rate(group),
+        }
+
+    # 分层汇总：同一个组件在不同题型上的作用完全不同（全局题看 rerank、图表题看资产注入）
+    for layer in sorted({o.layer for o in outcomes if o.layer}):
+        group = [o for o in outcomes if o.layer == layer]
+        report.by_layer[layer] = {
+            "count": float(len(group)),
+            "recall": _rate([hits_gold(o, k) for o in group]),
+            "mrr": _mrr(group, k),
+            "citation": None if retrieval_only else _rate(
+                [bool(o.citations.cited) for o in group if not o.expect_insufficient]
+            ),
+            "keypoints": None if retrieval_only else _keypoint_rate(group),
         }
 
     for outcome in outcomes:
@@ -201,3 +313,19 @@ def _rate(values: list[Any]) -> float | None:
     if not values:
         return None
     return sum(1.0 for v in values if v) / len(values)
+
+
+def _mrr(outcomes: list[Outcome], k: int) -> float | None:
+    golded = [o for o in outcomes if o.gold]
+    if not golded:
+        return None
+    return sum(
+        1.0 / rank if (rank := first_gold_rank(o, k)) else 0.0 for o in golded
+    ) / len(golded)
+
+
+def _keypoint_rate(outcomes: list[Outcome]) -> float | None:
+    scores = [score for o in outcomes if (score := keypoint_score(o)) is not None]
+    if not scores:
+        return None
+    return sum(hit / total for hit, total in scores) / len(scores)

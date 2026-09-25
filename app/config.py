@@ -77,6 +77,9 @@ class Settings(BaseSettings):
     # 注意 qwen3-reranker-* 这些名字会返回 "Model not exist"，OpenAI 兼容面的
     # /rerank 是 404 —— 只有下面这个原生端点 + qwen3.7-text-rerank 可用。
     rerank_model: str = "qwen3.7-text-rerank"
+    # 本地重排模型（RERANK_PROVIDER=local_bge 时用）。选多语言版而不是单语 base 版：
+    # 实测 bge-reranker-base 在"中文问 × 英文段落"上只差 0.005，等于没打分（见 providers/reranker.py）。
+    rerank_local_model: str = "BAAI/bge-reranker-v2-m3"
     # **不是** OpenAI 兼容面的地址，百炼的 rerank 是独立服务
     rerank_base_url: str = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
     rerank_timeout: float = 30.0
@@ -97,6 +100,11 @@ class Settings(BaseSettings):
     # ---------- 存储 ----------
     storage_dir: Path = PROJECT_ROOT / "storage"
     db_path: Path = PROJECT_ROOT / "storage" / "app.db"
+    # Chroma collection 名。**双 collection 对照**用：API embedding 用 "chunks"，
+    # 本地 bge-m3 另起一个（如 "chunks_bge_m3"）—— 换 embedding 必须换集合，
+    # 否则会把现有向量覆盖掉，且不可逆（EVAL_PLAN §4.3）。
+    # 走环境变量就能切：CHROMA_COLLECTION=chunks_bge_m3 EMBEDDING_PROVIDER=local
+    chroma_collection: str = "chunks"
 
     # ---------- 切分 ----------
     chunk_target_tokens: int = 800

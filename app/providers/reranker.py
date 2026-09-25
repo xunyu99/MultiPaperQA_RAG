@@ -26,6 +26,7 @@ qwen3.7 的分数落在可解释的 0~1 区间，相关和无关差两个数量�
 
 from __future__ import annotations
 
+import math
 from collections.abc import Sequence
 from typing import Any
 
@@ -43,6 +44,11 @@ class Reranker:
 
     def __init__(self, settings: Settings | None = None) -> None:
         self.settings = settings or get_settings()
+        # 本地 ONNX/CrossEncoder 分支：不发 HTTP，所以不建 httpx client
+        self._local: Any = None
+        if self.settings.rerank_provider == "local_bge":
+            self._client: Any = None
+            return
         kwargs: dict[str, Any] = {"timeout": self.settings.rerank_timeout}
         if self.settings.dashscope_proxy:
             kwargs["proxy"] = self.settings.dashscope_proxy
@@ -61,6 +67,8 @@ class Reranker:
         """
         if not documents:
             return []
+        if self.settings.rerank_provider == "local_bge":
+            return self._rerank_local(query, documents)
         payload = {
             "model": self.settings.rerank_model,
             "input": {
@@ -82,6 +90,33 @@ class Reranker:
         )
         response.raise_for_status()
         return _parse_scores(response.json(), len(documents))
+
+    def _rerank_local(self, query: str, documents: Sequence[str]) -> list[float]:
+        """本地交叉编码器打分，返回 0~1（**过一遍 sigmoid**）。
+
+        为什么要 sigmoid：`bge-reranker-v2-m3` 吐的是 logits（-10 ~ +10 那种），
+        而下游的 τ 阈值（"重排分低于阈值就判资料不足"）是按百炼那种 0~1 可解释分数量纲设计的。
+        不归一化的话，换 provider 就等于换了量纲，阈值会直接失效。
+        """
+        if self._local is None:
+            try:
+                from sentence_transformers import CrossEncoder
+            except ImportError as exc:  # pragma: no cover - 取决于本机是否装了可选依赖
+                raise RuntimeError(
+                    "RERANK_PROVIDER=local_bge 需要 sentence-transformers，先装：\n"
+                    "  .venv\\Scripts\\python.exe -m pip install sentence-transformers"
+                ) from exc
+            self.settings.model_cache_dir.mkdir(parents=True, exist_ok=True)
+            self._local = CrossEncoder(
+                self.settings.rerank_local_model,
+                cache_folder=str(self.settings.model_cache_dir),
+                device="cpu",
+                max_length=512,
+            )
+        logits = self._local.predict(
+            [[query or "", _clip(doc)] for doc in documents], convert_to_numpy=True
+        )
+        return [1.0 / (1.0 + math.exp(-float(value))) for value in logits]
 
 
 def _clip(text: str) -> str:

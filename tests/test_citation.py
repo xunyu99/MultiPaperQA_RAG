@@ -3,7 +3,21 @@
 from __future__ import annotations
 
 from app.ingest import converter, section_tree
-from app.ingest.citation import extract_citation
+from app.ingest.citation import extract_citation, strip_author_lines
+
+
+def test_strip_author_lines_only_drops_email_lines() -> None:
+    """含邮箱的行剔掉；不含邮箱的行原样留着。"""
+    text = "摘要第一句。\n张三 zhang@example.edu 某大学\n摘要第二句。"
+    stripped = strip_author_lines(text)
+    assert "zhang@example.edu" not in stripped
+    assert "摘要第一句。" in stripped and "摘要第二句。" in stripped
+
+
+def test_strip_author_lines_keeps_text_when_everything_is_email_lines() -> None:
+    """整段都是邮箱行时原样返回 —— 索引文本不能变成空。"""
+    text = "a@example.edu\nb@example.edu"
+    assert strip_author_lines(text) == text
 
 
 def _build(*entries: dict) -> section_tree.SectionBuild:

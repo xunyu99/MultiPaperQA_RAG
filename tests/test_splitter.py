@@ -12,6 +12,33 @@ from app.ingest.splitter import ChunkDraft, Unit, _render_content, _split_long_u
 from app.ingest.tokenizer import estimate_tokens
 
 
+def test_author_contact_lines_stay_out_of_index_text() -> None:
+    """作者联系块留 content、不进 index_text（2026-09-25 决定，方案 b）。
+
+    复刻真实数据里的形状：作者联系信息**自己是一个长块**（pe-clip:b00009，632 字符），
+    因为超过 300 字符的长度阈值被 `_author_blocks` 当成正文收住，于是漏进索引。
+    这里的判据是"块里有邮箱"，content 必须原样保留 —— 作者问题仍然要答得出来。
+    """
+    entries = [
+        {"type": "text", "text": "测试论文标题", "text_level": 1, "page_idx": 0},
+        {"type": "text", "text": "Abstract", "text_level": 2, "page_idx": 0},
+        {"type": "text", "text": "这是摘要正文，讲的是方法。" * 6, "page_idx": 0},
+        {
+            "type": "text",
+            "text": "Authors' Contact Information: 张三, zhang@example.edu, 某大学; 李四, li@example.com, 某大学",
+            "page_idx": 0,
+        },
+    ]
+    build = _split("p-author", entries)
+    content = "\n".join(chunk["content"] for chunk in build.chunks)
+    indexed = "\n".join(chunk["index_text"] for chunk in build.chunks)
+
+    assert "zhang@example.edu" in content and "li@example.com" in content
+    assert "zhang@example.edu" not in indexed and "li@example.com" not in indexed
+    assert "Authors' Contact Information" not in indexed
+    assert "这是摘要正文" in indexed  # 摘要本体没被误删
+
+
 def _settings(**kw) -> Settings:
     base = {
         "chunk_target_tokens": 100,

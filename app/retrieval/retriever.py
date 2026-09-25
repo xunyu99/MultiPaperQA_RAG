@@ -275,18 +275,29 @@ def _merge_channels(
 ) -> tuple[list[_Candidate], dict[str, str | None]]:
     """两路候选**合并去重**（并集：向量在前、关键词独有在后）。
 
-    **这里刻意不做 RRF**。向量分（余弦）和关键词分（BM25）确实不同量纲，但排序
-    不归合并阶段管 —— 最终顺序交给 rerank，RRF 排出来的结果会被重排完全覆盖。
-    合并只负责两件事：不漏候选、不重复。所以 `score` 现在只是**占位名次分**，
+    合并只负责两件事：不漏候选、不重复。`score` 是**占位名次分**（1/位次），
     rerank 成功时会被换成真正的重排分。
+
+    **2026-09-25 实测过 RRF，回滚了**（`rrf_k=60`，`score = Σ_路 1/(rrf_k+名次)`）：
+
+    - 重排正常时 RRF **完全没有影响** —— RRF+rerank 与 并集+rerank 的评测 dump
+      **逐字节相同**（MD5 一致）。因为合并之后、重排之前没有任何截断，
+      per-paper 配额也是在重排之后才裁，"排序交给 rerank"这句话在正常路径上成立。
+    - 但降级路径（`--no-rerank` / 重排失败）RRF **更差**：总体 Recall 持平（79%），
+      MRR 0.614 → 0.538，细节层 0.589 → 0.430。逐题看，关键词候选确实上场了
+      （`keyword_5`/`keyword_en_5` 从不过变过），但 `detail_3`/`asset_9` 被挤掉 ——
+      说明这套语料上**关键词候选的排序质量本来就比向量差**，给它同权反而拖低排序。
+
+    所以按 PLAN §0.2"涨了才留"：RRF 没有收益、降级路径还变差，回滚。
+    结论记在 EVAL_PLAN §6.3，数据在 `.eval_out/rrf_*.json`。
 
     返回 (候选, chunk_id → paper_id)，后者给多篇按篇保额用。
     """
-    ordered: list[str] = []
     # `similarity` **只认向量通道**：关键词通道也有个叫 similarity 的字段（= -bm25），
     # 量纲完全不同（实测能到 11.4），混进展示层会变成"相似度 11.407"这种鬼话。
     # 关键词独有的 chunk 没有向量相似度，就是 0.0。
     similarity: dict[str, float] = {hit.chunk_id: float(hit.similarity) for hit in vector_hits}
+    ordered: list[str] = []
     paper_of: dict[str, str | None] = {}
     seen: set[str] = set()
     for hits in (vector_hits, keyword_hits):
@@ -316,8 +327,7 @@ def _rerank(
 ) -> tuple[list[_Candidate], dict[str, Any]]:
     """用交叉编码器重排候选。**任何失败都降级成原顺序**，不能拖垮整个请求。
 
-    降级后的顺序就是合并顺序（向量在前）—— 这也正是 RRF 该在的位置：以后要做
-    降级排序再加，别在正常路径上先排一遍再被重排覆盖。
+    降级后的顺序就是合并顺序（向量在前）—— RRF 试过、更差、已回滚，见 `_merge_channels`。
 
     打分用的是 `content`，**占位符要换成资产的 caption** 再送：重排是交叉编码器，
     它看不到向量索引里那份 `index_text`，如果占位符被直接剔成空格，它就完全不知道

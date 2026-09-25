@@ -22,10 +22,18 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Any
 
 from app.config import get_settings
 from app.db.connection import connect, init_db
-from app.eval.metrics import Outcome, evaluate, hits_gold, is_ungrounded
+from app.eval.metrics import (
+    Outcome,
+    evaluate,
+    first_gold_rank,
+    hits_gold,
+    is_ungrounded,
+    keypoint_score,
+)
 from app.generation.answerer import (
     MODE_UNKNOWN,
     REASON_DOWNGRADED,
@@ -34,11 +42,39 @@ from app.generation.answerer import (
     answer_from_cards,
 )
 from app.generation.evidence import build_cards
+from app.providers.llm import LLMClient
 from app.retrieval.retriever import retrieve
 from app.retrieval.vector_index import ChunkVectorIndex
 
 QUESTIONS_PATH = Path(__file__).resolve().parent.parent / "app" / "eval" / "questions.jsonl"
 DEFAULT_DUMP_PATH = Path(__file__).resolve().parent.parent / ".eval_out" / "last.json"
+
+# 中译英（E9）：只用于**检索**，生成仍用原问句 —— 否则"检索语言"和"生成语言"
+# 两个变量会混在一起。专有名词和编号写法必须原样保留，否则 scope 解析和
+# 资产定点注入（"表 1"）都会崩。
+_TRANSLATE_PROMPT = (
+    "把下面这个问题翻译成英文，用于检索英文论文。\n\n"
+    "硬性要求：\n"
+    "1. 专有名词原样保留：论文名（PE-CLIP / ORSANet / FDSRM / FaceCaption-15M / EmotioNet）、"
+    "模型名、数据集名、缩写，以及「表 N」「图 N」这类编号写法，一律不要改写或翻译。\n"
+    "2. 只输出译文本身，一行，不要解释、不要引号、不要前后缀。\n\n"
+    "问题：{question}"
+)
+
+
+def _translator(settings):
+    """返回一个 问题 -> 英文译文 的函数（LLM 调用，结果在内存里缓存）。"""
+    planner = LLMClient(settings).build_planner()
+    cache: dict[str, str] = {}
+
+    def translate(question: str) -> str:
+        if question not in cache:
+            reply = planner.invoke(_TRANSLATE_PROMPT.format(question=question))
+            text = getattr(reply, "content", reply)
+            cache[question] = str(text).strip().strip('"').splitlines()[0] if str(text).strip() else question
+        return cache[question]
+
+    return translate
 
 
 def main() -> int:
@@ -53,6 +89,22 @@ def main() -> int:
         help="每题的检索明细写成 JSON（默认 .eval_out/last.json），传 0 表示不写",
     )
     parser.add_argument("--section-cap", type=int, default=None, help="同章节去重上限（0=关，默认取配置）")
+    # ---- 消融开关（EVAL_PLAN §3.1）：一次运行只改一个变量，跑完对着数字看有没有用 ----
+    parser.add_argument("--no-keyword", action="store_true", help="关掉关键词通道（纯向量 vs 双路 A/B）")
+    parser.add_argument("--no-rerank", action="store_true", help="关掉重排（候选 50 -> 直接取前 k）")
+    parser.add_argument("--no-asset", action="store_true", help="关掉资产定点注入（问「表 1」不再钉住本体）")
+    parser.add_argument(
+        "--layer", default=None, choices=["global", "detail", "asset", "refusal"],
+        help="只跑某一层（分层是本次评测的核心，见 EVAL_PLAN §1.1）",
+    )
+    parser.add_argument(
+        "--repeat", type=int, default=1, metavar="N",
+        help="整集重复跑 N 次，只打每轮汇总（看 LLM 的波动；成本 ×N）",
+    )
+    parser.add_argument(
+        "--translate-query", action="store_true",
+        help="中译英对照（E9）：检索用英文译文，生成仍用原问句；每题多 1 次 LLM 调用",
+    )
     parser.add_argument(
         "--ab-section-cap", type=int, default=None, metavar="N",
         help="单次跑里对比 cap=0（关）与 cap=N：每题只算 1 次 embedding，用来判断这个改动到底有没有用",
@@ -60,6 +112,20 @@ def main() -> int:
     args = parser.parse_args()
 
     settings = get_settings()
+    # 消融开关直接改 settings 副本：检索链路不认命令行，只认 settings（这也保证
+    # "评测里关掉的"和"线上配置里的"是同一个开关，不会两套逻辑）
+    overrides: dict[str, Any] = {}
+    if args.no_keyword:
+        overrides["keyword_enabled"] = False
+    if args.no_rerank:
+        overrides["rerank_enabled"] = False
+    if overrides:
+        settings = settings.model_copy(update=overrides)
+        print(f"[消融] " + "、".join(f"{key}=False" for key in overrides))
+    auto_asset = not args.no_asset
+    translate = _translator(settings) if args.translate_query else None
+    if translate is not None:
+        print("[E9] 检索前把问题译成英文（专有名词/编号保持原样），生成仍用原问句")
     k = args.k or settings.top_k
     questions = _load_questions()
     if args.only:
@@ -67,6 +133,11 @@ def main() -> int:
         questions = [item for item in questions if item["id"] in wanted]
         if not questions:
             print(f"没有匹配的题：{args.only}")
+            return 1
+    if args.layer:
+        questions = [item for item in questions if item.get("layer") == args.layer]
+        if not questions:
+            print(f"没有这一层的题：{args.layer}")
             return 1
 
     if args.list:
@@ -84,21 +155,36 @@ def main() -> int:
             print(f"预计调用：{len(questions)} 次 embedding + {len(questions)} 次 LLM")
         print()
 
-        outcomes: list[Outcome] = []
-        for item in questions:
-            outcome = _run_one(
-                conn, index, item, k, settings,
-                retrieval_only=args.retrieval_only, section_cap=args.section_cap,
-            )
-            outcomes.append(outcome)
-            _print_one(outcome, k, args.verbose)
+        reports: list[Any] = []
+        for run in range(1, max(1, args.repeat) + 1):
+            if args.repeat > 1:
+                print(f"--- 第 {run} / {args.repeat} 轮 ---")
 
-        report = evaluate(outcomes, k=k, retrieval_only=args.retrieval_only)
-        _print_report(report, k, args.retrieval_only)
-        if args.dump and args.dump != "0":
-            path = Path(args.dump)
-            _dump_json(path, outcomes, k, args.retrieval_only)
-            print(f"明细已写入：{path}")
+            outcomes: list[Outcome] = []
+            for item in questions:
+                outcome = _run_one(
+                    conn, index, item, k, settings,
+                    retrieval_only=args.retrieval_only, section_cap=args.section_cap,
+                    auto_asset=auto_asset, translate=translate,
+                )
+                outcomes.append(outcome)
+                # 重复跑时逐题打印会刷屏，只留最终汇总
+                if args.repeat == 1:
+                    _print_one(outcome, k, args.verbose)
+
+            report = evaluate(outcomes, k=k, retrieval_only=args.retrieval_only)
+            reports.append(report)
+            _print_report(report, k, args.retrieval_only)
+
+            if args.dump and args.dump != "0":
+                path = Path(args.dump)
+                if args.repeat > 1:
+                    path = path.with_name(f"{path.stem}-run{run}{path.suffix}")
+                _dump_json(path, outcomes, k, args.retrieval_only)
+                print(f"明细已写入：{path}")
+
+        if len(reports) > 1:
+            _print_spread(reports, k)
         return 0
     finally:
         conn.close()
@@ -247,11 +333,16 @@ def _dump_json(path: Path, outcomes: list[Outcome], k: int, retrieval_only: bool
             {
                 "id": outcome.question_id,
                 "type": outcome.qtype,
+                "layer": outcome.layer,
+                "difficulty": outcome.difficulty,
                 "question": outcome.question,
                 "scope": outcome.scope,
                 "gold": outcome.gold,
                 "require_all_papers": outcome.require_all_papers,
                 "hit": hits_gold(outcome, k),
+                "gold_rank": first_gold_rank(outcome, k),
+                "keypoints": outcome.keypoints,
+                "keypoint_score": keypoint_score(outcome),
                 "mode": outcome.mode,
                 "unknown_reason": outcome.unknown_reason,
                 "expect_reason": outcome.expect_reason,
@@ -285,40 +376,56 @@ def _dump_json(path: Path, outcomes: list[Outcome], k: int, retrieval_only: bool
 
 def _run_one(
     conn, index, item: dict, k: int, settings, retrieval_only: bool,
-    vector=None, section_cap: int | None = None,
+    vector=None, section_cap: int | None = None, auto_asset: bool = True,
+    translate=None,
 ) -> Outcome:
     stats: dict = {}
+    # E9：检索用译文，**scope 与生成仍按原问句**（题面显式给的 scope 不受影响；
+    # 没给 scope 的题由 retrieve 从 query 里解析，所以要求译文保留论文名）
+    query = translate(item["question"]) if translate is not None else item["question"]
     hits = retrieve(
-        conn, item["question"], k=k, index=index, settings=settings,
-        paper_id=item.get("paper_id"), stats=stats,
-        vector=vector, section_cap=section_cap,
+        conn, query, k=k, index=index, settings=settings,
+        paper_id=item.get("paper_id"),
+        # 题面显式给的范围（跨论文题必须显式给：字面解析只会认出第一篇，
+        # 另一篇被过滤掉，题目永远过不了 —— 2026-09-25 实测踩到）
+        paper_ids=item.get("scope") or None,
+        stats=stats,
+        vector=vector, section_cap=section_cap, auto_asset=auto_asset,
     )
+
+    common = {
+        "question_id": item["id"],
+        "qtype": item["type"],
+        "question": item["question"],
+        "expect_insufficient": item["expect_insufficient"],
+        "gold": item.get("gold") or [],
+        "scope": stats.get("scope") or [],
+        "keypoints": item.get("keypoints") or [],
+        "layer": item.get("layer") or "",
+        "difficulty": item.get("difficulty") or "",
+        "reference": item.get("reference"),
+        "note": item.get("note", ""),
+        "require_all_papers": bool(item.get("require_all_papers")),
+        "expect_reason": item.get("expect_reason"),
+    }
 
     if retrieval_only:
         # 不调 LLM：用占位结果，只让检索层指标有效。
         # 档位标成 unknown —— "这轮没生成"当然不是 grounded，
         # 否则"挂了 grounded 却没引用"那条判据会把每道题都报成无依据。
         return Outcome(
-            question_id=item["id"], qtype=item["type"], question=item["question"],
-            expect_insufficient=item["expect_insufficient"], gold=item.get("gold") or [],
-            scope=stats.get("scope") or [], hits=hits, answer="",
-            citations=CitationReport(mode=MODE_UNKNOWN), note=item.get("note", ""),
-            require_all_papers=bool(item.get("require_all_papers")),
-            expect_reason=item.get("expect_reason"),
+            **common,
+            hits=hits, answer="", citations=CitationReport(mode=MODE_UNKNOWN),
         )
 
     result: AnswerResult = answer_from_cards(item["question"], build_cards(hits), settings=settings)
     return Outcome(
-        question_id=item["id"], qtype=item["type"], question=item["question"],
-        expect_insufficient=item["expect_insufficient"], gold=item.get("gold") or [],
-        scope=stats.get("scope") or [],
+        **common,
         # 生成用的证据卡按文档顺序重排了，这里回传到检索顺序会误导人，
         # 所以 hits 保留检索顺序（Recall 只看"有没有命中"，与顺序无关）
         hits=hits,
         answer=result.answer, citations=result.citations,
-        latency_ms=result.latency_ms, note=item.get("note", ""),
-        require_all_papers=bool(item.get("require_all_papers")),
-        expect_reason=item.get("expect_reason"),
+        latency_ms=result.latency_ms,
         raw_answer=result.raw_answer,
     )
 
@@ -334,8 +441,12 @@ def _print_one(outcome: Outcome, k: int, verbose: bool) -> None:
     if outcome.mode == MODE_UNKNOWN:
         reason = outcome.unknown_reason or "?"
         if outcome.expect_insufficient:
-            ok = outcome.expect_reason in (None, reason)
-            marks.append(f"{'拒答OK' if ok else '拒答X'}({reason})")
+            if reason == "?":
+                # --retrieval-only 没调 LLM，"拒答"这件事无从判断，别报成拒答失败
+                marks.append("拒答?(未生成)")
+            else:
+                ok = outcome.expect_reason in (None, reason)
+                marks.append(f"{'拒答OK' if ok else '拒答X'}({reason})")
         elif reason == REASON_DOWNGRADED:
             marks.append("降级X")
         else:
@@ -364,7 +475,10 @@ def _print_report(report, k: int, retrieval_only: bool) -> None:
     print("=" * 66)
     print(f"=== 基线指标（{report.total} 题，top-{k}）===")
     print(f"  Recall@{k}          : {_pct(report.recall_at_k)}     （top-{k} 命中预期章节的比例）")
+    mrr_text = "—" if report.mrr_at_k is None else f"{report.mrr_at_k:.3f}"
+    print(f"  MRR@{k}             : {mrr_text}     （首个 gold 命中排名的倒数均值：第一条就中 = 1.000）")
     if not retrieval_only:
+        print(f"  要点命中率         : {_pct(report.keypoint_rate)}     （keypoints 命中条数 ÷ 总数，按题平均）")
         print(f"  引用率             : {_pct(report.citation_rate)}     （非错库题里给出引用的比例）")
         print(f"  编造引用           : {report.unknown_citations} 处   （引用了不存在的 [En]，必须为 0）")
         print(f"  无依据率           : {_pct(report.ungrounded_rate)}     （编引用 / 该拒答却答了 / 挂了 grounded 却没引用）")
@@ -384,6 +498,20 @@ def _print_report(report, k: int, retrieval_only: bool) -> None:
             f"{_pct(row['citation'], 9)}{_pct(row['ungrounded'], 9)}"
             f"{_pct(row.get('unknown'), 9)}"
         )
+    if report.by_layer:
+        print()
+        print("=== 分层（全局题看 rerank、图表题看资产注入、拒答单独看）===")
+        print(f"  {'层':<10}{'题数':>4}{'Recall':>9}{'MRR':>8}{'引用率':>9}{'要点':>8}")
+        for layer, row in report.by_layer.items():
+            mrr = row.get("mrr")
+            print(
+                f"  {layer:<10}{int(row['count']):>4}{_pct(row['recall'], 9)}"
+                f"{(f'{mrr:.3f}' if mrr is not None else '—'):>8}"
+                f"{_pct(row['citation'], 9)}{_pct(row.get('keypoints'), 8)}"
+            )
+    if report.keypoint_misses:
+        print()
+        print(f"=== 要点没答全的题：{', '.join(report.keypoint_misses)} ===")
     if report.fails:
         print()
         print(f"=== 需要看的题：{', '.join(report.fails)} ===")
@@ -398,6 +526,27 @@ def _pct(value: float | None, width: int = 0) -> str:
     """None = 不适用（没算），不能显示成 0% —— 那会被当成"全错"。"""
     text = "—" if value is None else f"{value:.0%}"
     return text.rjust(width) if width else text
+
+
+def _print_spread(reports: list[Any], k: int) -> None:
+    """`--repeat N` 的收尾：把每轮的核心数字并排打出来，看波动有多大。
+
+    LLM 的输出有随机性，单次 100% 很脆 —— 重复跑才能区分"稳定达标"和"这次运气好"。
+    不合并成"多数票"：那是另一种口径（会掩盖单轮的坏结果），要看分布就给分布。
+    """
+    print()
+    print("=" * 66)
+    print(f"=== {len(reports)} 轮波动（同题集同参数）===")
+    print(f"  {'轮次':<6}{'Recall':>8}{'MRR':>8}{'要点':>8}{'引用率':>9}{'无依据':>9}{'拒答带引用':>12}{'降级':>6}")
+    for index, report in enumerate(reports, 1):
+        mrr = "—" if report.mrr_at_k is None else f"{report.mrr_at_k:.3f}"
+        print(
+            f"  {index:<6}{_pct(report.recall_at_k, 8)}{mrr:>8}"
+            f"{_pct(report.keypoint_rate, 8)}{_pct(report.citation_rate, 9)}"
+            f"{_pct(report.ungrounded_rate, 9)}{report.refusal_cited:>12}{report.downgraded_count:>6}"
+        )
+    print("=" * 66)
+    print()
 
 
 def _list(questions: list[dict]) -> int:

@@ -25,7 +25,7 @@ chromadb>=1.0
 # Phase 4  agent orchestration
 # langgraph>=1.0
 # Phase 5  local rerank / image handling
-# fastembed>=0.8
+sentence-transformers>=3.0
 # Phase 6  API
 fastapi>=0.115
 uvicorn>=0.32

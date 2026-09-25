@@ -47,7 +47,7 @@ from typing import Any
 
 from app.config import Settings, get_settings
 from app.ingest import assets as assets_mod
-from app.ingest.citation import author_block_ids
+from app.ingest.citation import author_block_ids, is_author_contact_block, strip_author_lines
 from app.ingest.converter import (
     BLOCK_CAPTION,
     BLOCK_EQUATION,
@@ -232,7 +232,9 @@ def _build_units(
                 order_index=block.get("order_index") or 0,
                 kind="text",
                 content_text=text,
-                index_text=text,
+                # 作者联系块（含邮箱）不进索引，但 content 原样保留：
+                # 作者问题照样答得出来，摘要向量不再被邮箱和单位稀释（方案 b）。
+                index_text="" if is_author_contact_block(text) else text,
                 section_id=block.get("section_id"),
                 section_path=section_path,
                 page_start=block.get("page_idx"),
@@ -349,7 +351,8 @@ def _clone(unit: Unit, text: str, overlap_prefix: str = "") -> Unit:
         order_index=unit.order_index,
         kind=unit.kind,
         content_text=text,
-        index_text=text,
+        # 切分后仍要守住"作者联系块不进索引"这条（长块被切开时最容易漏）
+        index_text="" if is_author_contact_block(text) else text,
         section_id=unit.section_id,
         section_path=unit.section_path,
         page_start=unit.page_start,
@@ -490,7 +493,10 @@ def _is_ancestor(
 # ----------------------------------------------------------------------
 def _to_row(paper_id: str, draft: ChunkDraft, index: int) -> dict[str, Any]:
     content = _render_content(draft)
-    index_text = _render_index_text(draft)
+    # index_text 里再剔一层「作者联系行」：MinerU 会把摘要和作者联系信息并进同一个块
+    # （pe-clip 的 preamble 块），按块排除抓不到，但那些邮箱和单位会稀释摘要向量。
+    # content 原样保留 —— 作者信息仍然可引用、可回答（2026-09-25 决定，方案 b）。
+    index_text = strip_author_lines(_render_index_text(draft))
     pages = [unit.page_start for unit in draft.units if unit.page_start is not None]
     page_ends = [unit.page_end for unit in draft.units if unit.page_end is not None]
     kinds = draft.kinds

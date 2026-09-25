@@ -50,13 +50,14 @@ class ChunkVectorIndex:
         self,
         settings: Settings | None = None,
         embedder: Embedder | None = None,
-        collection_name: str = COLLECTION_NAME,
+        collection_name: str | None = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.embedder = embedder or Embedder(self.settings)
-        self.collection_name = collection_name
+        # 不给就用 settings 里的（默认 "chunks"）—— 双 collection 对照靠它切换
+        self.collection_name = collection_name or self.settings.chroma_collection
         self._store = Chroma(
-            collection_name=collection_name,
+            collection_name=self.collection_name,
             embedding_function=self.embedder,
             persist_directory=str(self.settings.chroma_dir),
             # 注意：不写这一行就是 l2 距离，不是 cosine —— 见模块开头第 1 条

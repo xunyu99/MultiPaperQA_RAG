@@ -2,7 +2,16 @@
 
 from __future__ import annotations
 
-from app.eval.metrics import Outcome, evaluate, hits_gold, is_ungrounded
+import pytest
+
+from app.eval.metrics import (
+    Outcome,
+    evaluate,
+    first_gold_rank,
+    hits_gold,
+    is_ungrounded,
+    keypoint_score,
+)
 from app.generation.answerer import DOWNGRADE_ANSWER, CitationReport
 from app.retrieval.retriever import RetrievedChunk
 
@@ -40,6 +49,8 @@ def _outcome(
     expect_insufficient: bool = False,
     expect_reason: str | None = None,
     require_all_papers: bool = False,
+    keypoints: list | None = None,
+    layer: str = "",
 ) -> Outcome:
     return Outcome(
         question_id=qid,
@@ -59,7 +70,80 @@ def _outcome(
         ),
         require_all_papers=require_all_papers,
         expect_reason=expect_reason,
+        keypoints=keypoints or [],
+        layer=layer,
     )
+
+
+# ----------------------------------------------------------------------
+# MRR@k：第一个命中排名的倒数（2026-09-25 新增）
+# ----------------------------------------------------------------------
+def test_first_gold_rank_counts_position() -> None:
+    hits = [_hit("p1", "别的章节"), _hit("p1", "别的章节"), _hit("p1", "4.2 Implementation Setup")]
+    assert first_gold_rank(_outcome(hits=hits), 5) == 3
+    assert first_gold_rank(_outcome(hits=hits), 2) is None
+
+
+def test_first_gold_rank_cross_paper_waits_for_both() -> None:
+    """跨论文题要**两篇都到齐**的那个位置：第 1 条只中一篇，不算。"""
+    gold = [{"paper_id": "p1", "section": "A"}, {"paper_id": "p2", "section": "B"}]
+    hits = [_hit("p1", "A"), _hit("p1", "A"), _hit("p2", "B")]
+    outcome = _outcome(hits=hits, gold=gold, require_all_papers=True)
+    assert first_gold_rank(outcome, 5) == 3
+    assert first_gold_rank(outcome, 2) is None
+
+
+def test_first_gold_rank_is_none_without_gold() -> None:
+    assert first_gold_rank(_outcome(gold=[]), 5) is None
+
+
+def test_evaluate_reports_mrr() -> None:
+    first = _outcome("q1", hits=[_hit("p1", "4.2 Implementation Setup")])
+    third = _outcome("q2", hits=[_hit("p1", "别的"), _hit("p1", "别的"), _hit("p1", "4.2 Implementation Setup")])
+    report = evaluate([first, third], k=5)
+    assert report.mrr_at_k == pytest.approx((1.0 + 1 / 3) / 2)
+
+
+# ----------------------------------------------------------------------
+# 要点命中率（2026-09-25 新增）
+# ----------------------------------------------------------------------
+def test_keypoint_score_accepts_alternative_spellings() -> None:
+    """备选写法任一命中即算；全角数字经 NFKC 归一化后也算中。"""
+    outcome = _outcome(
+        answer="batch size 8，adapter 学习率 2e-4。",
+        keypoints=[["２e-4", "2e-4"], ["batch size 4", "batch size 8"]],
+    )
+    assert keypoint_score(outcome) == (2, 2)
+
+
+def test_keypoint_score_reports_misses() -> None:
+    outcome = _outcome(answer="只说了 8。", keypoints=["8", ["0.85", "0.9"]])
+    assert keypoint_score(outcome) == (1, 2)
+
+
+def test_keypoint_score_is_none_without_keypoints() -> None:
+    assert keypoint_score(_outcome(keypoints=[])) is None
+
+
+def test_evaluate_reports_keypoints_and_layers() -> None:
+    good = _outcome(
+        "q1", answer="batch size 8", keypoints=["8"], layer="detail",
+    )
+    missed = _outcome(
+        "q2", answer="没有提到那个数字", keypoints=["40"], layer="global",
+    )
+    report = evaluate([good, missed], k=5)
+    assert report.keypoint_rate == 0.5  # (1/1 + 0/1) / 2
+    assert report.keypoint_misses == ["q2"]
+    assert report.by_layer["detail"]["keypoints"] == 1.0
+    assert report.by_layer["global"]["keypoints"] == 0.0
+    assert report.by_layer["detail"]["mrr"] == 1.0
+
+
+def test_keypoint_rate_is_none_in_retrieval_only() -> None:
+    """--retrieval-only 不调 LLM，答案为空 —— 要点命中率显示"不适用"而不是 0。"""
+    report = evaluate([_outcome("q1", answer="", keypoints=["8"])], k=5, retrieval_only=True)
+    assert report.keypoint_rate is None
 
 
 # ----------------------------------------------------------------------
