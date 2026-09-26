@@ -161,7 +161,12 @@ class Judge:
         return self._llm
 
     def _judge(self, name: str, prompt: str, question_id: str, answer: str) -> JudgeResult:
-        key = _cache_key(name, self.model, PROMPT_VERSION, question_id, answer)
+        # key 取**整段 prompt** 的哈希：问题、证据、参考答案、答案全在里面。
+        # 2026-09-26 修：以前用"答案哈希"，结果改了 reference 之后缓存照旧命中 ——
+        # asset_1 因此拿到一条**旧 reference 时代**的判定（模型明明把表 2 的 9 行都列了，
+        # 却被按"漏了初始学习率"判 0，而那句早被我删掉了）。
+        # 缓存必须覆盖判官的**全部输入**，否则就是拿旧标准判新答案。
+        key = _cache_key(name, self.model, PROMPT_VERSION, question_id, prompt)
         hit = self._cache.get(key)
         if hit is not None:
             return JudgeResult(
@@ -192,8 +197,9 @@ class Judge:
         )
 
 
-def _cache_key(judge: str, model: str, version: str, question_id: str, answer: str) -> str:
-    digest = hashlib.sha1(f"{answer}".encode("utf-8")).hexdigest()[:16]
+def _cache_key(judge: str, model: str, version: str, question_id: str, prompt: str) -> str:
+    """key 里放**完整 prompt 的哈希** —— 判官看到的东西变了就必须重判。"""
+    digest = hashlib.sha1(prompt.encode("utf-8")).hexdigest()[:16]
     return f"{judge}|{model}|{version}|{question_id}|{digest}"
 
 
