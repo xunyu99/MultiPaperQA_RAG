@@ -64,6 +64,10 @@ class Outcome:
     difficulty: str = ""
     # 参考答案：只喂给 correctness 裁判，不进机械指标（裁判在 M2 接）
     reference: str | None = None
+    # LLM 裁判结果（M2）：1 = 通过，0 = 不通过，None = 这轮没判
+    judge_grounded: int | None = None
+    judge_correct: int | None = None
+    judge_note: str = ""
 
     @property
     def insufficient(self) -> bool:
@@ -102,6 +106,10 @@ class Report:
     keypoint_rate: float | None = None
     # 要点没答全的题（人工复核清单，不与 fails 混在一起）
     keypoint_misses: list[str] = field(default_factory=list)
+    # 裁判层（M2）：有据率 / 正确率；缓存命中数单独记（算钱用）
+    groundedness_rate: float | None = None
+    correctness_rate: float | None = None
+    judge_cached: int = 0
     by_type: dict[str, dict[str, float | None]] = field(default_factory=dict)
     by_layer: dict[str, dict[str, float | None]] = field(default_factory=dict)
     fails: list[str] = field(default_factory=list)
@@ -263,6 +271,13 @@ def evaluate(
                 for o in outcomes
                 if (score := keypoint_score(o)) is not None and score[0] < score[1]
             ]
+        report.groundedness_rate = _rate(
+            [o.judge_grounded == 1 for o in outcomes if o.judge_grounded is not None]
+        )
+        report.correctness_rate = _rate(
+            [o.judge_correct == 1 for o in outcomes if o.judge_correct is not None]
+        )
+        report.judge_cached = sum(1 for o in outcomes if o.judge_note == "cached")
 
     for qtype in sorted({o.qtype for o in outcomes}):
         group = [o for o in outcomes if o.qtype == qtype]

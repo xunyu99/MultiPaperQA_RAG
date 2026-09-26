@@ -42,6 +42,8 @@ from app.generation.answerer import (
     answer_from_cards,
 )
 from app.generation.evidence import build_cards
+from app.generation.evidence import render as render_cards
+from app.eval.judge import Judge
 from app.providers.llm import LLMClient
 from app.retrieval.retriever import retrieve
 from app.retrieval.vector_index import ChunkVectorIndex
@@ -106,6 +108,10 @@ def main() -> int:
         help="中译英对照（E9）：检索用英文译文，生成仍用原问句；每题多 1 次 LLM 调用",
     )
     parser.add_argument(
+        "--judge", action="store_true",
+        help="接 LLM 裁判（M2）：groundedness + correctness，每题各 1 次调用（有缓存）",
+    )
+    parser.add_argument(
         "--ab-section-cap", type=int, default=None, metavar="N",
         help="单次跑里对比 cap=0（关）与 cap=N：每题只算 1 次 embedding，用来判断这个改动到底有没有用",
     )
@@ -126,6 +132,12 @@ def main() -> int:
     translate = _translator(settings) if args.translate_query else None
     if translate is not None:
         print("[E9] 检索前把问题译成英文（专有名词/编号保持原样），生成仍用原问句")
+    if args.judge and args.retrieval_only:
+        print("--judge 需要真实回答，不能和 --retrieval-only 一起用")
+        return 1
+    judge = Judge(settings) if args.judge else None
+    if judge is not None:
+        print(f"[M2] 裁判：{judge.model}（groundedness + correctness，命中缓存不重复调用）")
     k = args.k or settings.top_k
     questions = _load_questions()
     if args.only:
@@ -165,12 +177,20 @@ def main() -> int:
                 outcome = _run_one(
                     conn, index, item, k, settings,
                     retrieval_only=args.retrieval_only, section_cap=args.section_cap,
-                    auto_asset=auto_asset, translate=translate,
+                    auto_asset=auto_asset, translate=translate, judge=judge,
                 )
                 outcomes.append(outcome)
                 # 重复跑时逐题打印会刷屏，只留最终汇总
                 if args.repeat == 1:
                     _print_one(outcome, k, args.verbose)
+                # **增量落盘**：2026-09-26 两次长任务都因为"跑到最后才写 dump"而白跑
+                # （进程非正常退出 → 200KB 结果全丢）。现在每判完一题就覆写一次，
+                # 中断也能拿到已完成的部分。文件名逻辑与收尾那次保持一致。
+                if args.dump and args.dump != "0":
+                    partial = Path(args.dump)
+                    if args.repeat > 1:
+                        partial = partial.with_name(f"{partial.stem}-run{run}{partial.suffix}")
+                    _dump_json(partial, outcomes, k, args.retrieval_only)
 
             report = evaluate(outcomes, k=k, retrieval_only=args.retrieval_only)
             reports.append(report)
@@ -346,6 +366,10 @@ def _dump_json(path: Path, outcomes: list[Outcome], k: int, retrieval_only: bool
                 "mode": outcome.mode,
                 "unknown_reason": outcome.unknown_reason,
                 "expect_reason": outcome.expect_reason,
+                # 裁判结果（M2）：写进 dump 才能在 dump 上手算/复判，不必再依赖缓存反推
+                "judge_grounded": outcome.judge_grounded,
+                "judge_correct": outcome.judge_correct,
+                "judge_note": outcome.judge_note,
                 "top1_rank_score": round(outcome.hits[0].rank_score, 4) if outcome.hits else None,
                 "answer": outcome.answer,
                 "raw_answer": outcome.raw_answer,
@@ -377,7 +401,7 @@ def _dump_json(path: Path, outcomes: list[Outcome], k: int, retrieval_only: bool
 def _run_one(
     conn, index, item: dict, k: int, settings, retrieval_only: bool,
     vector=None, section_cap: int | None = None, auto_asset: bool = True,
-    translate=None,
+    translate=None, judge=None,
 ) -> Outcome:
     stats: dict = {}
     # E9：检索用译文，**scope 与生成仍按原问句**（题面显式给的 scope 不受影响；
@@ -418,7 +442,26 @@ def _run_one(
             hits=hits, answer="", citations=CitationReport(mode=MODE_UNKNOWN),
         )
 
-    result: AnswerResult = answer_from_cards(item["question"], build_cards(hits), settings=settings)
+    cards = build_cards(hits)
+    result: AnswerResult = answer_from_cards(item["question"], cards, settings=settings)
+    grounded = correct = None
+    judge_note = ""
+    if judge is not None:
+        # 证据用**生成时看到的那份文本**（默认不渲染 citation），保证"判的是同一件事"
+        evidence = render_cards(cards)
+        grounded_result = judge.groundedness(
+            item["question"], evidence, result.answer, question_id=item["id"]
+        )
+        grounded = grounded_result.label
+        reference = item.get("reference")
+        if reference:
+            correct_result = judge.correctness(
+                item["question"], reference, result.answer, question_id=item["id"]
+            )
+            correct = correct_result.label
+            judge_note = "cached" if (grounded_result.cached and correct_result.cached) else ""
+        else:
+            judge_note = "cached" if grounded_result.cached else ""
     return Outcome(
         **common,
         # 生成用的证据卡按文档顺序重排了，这里回传到检索顺序会误导人，
@@ -427,6 +470,9 @@ def _run_one(
         answer=result.answer, citations=result.citations,
         latency_ms=result.latency_ms,
         raw_answer=result.raw_answer,
+        judge_grounded=grounded,
+        judge_correct=correct,
+        judge_note=judge_note,
     )
 
 
@@ -479,6 +525,10 @@ def _print_report(report, k: int, retrieval_only: bool) -> None:
     print(f"  MRR@{k}             : {mrr_text}     （首个 gold 命中排名的倒数均值：第一条就中 = 1.000）")
     if not retrieval_only:
         print(f"  要点命中率         : {_pct(report.keypoint_rate)}     （keypoints 命中条数 ÷ 总数，按题平均）")
+        if report.groundedness_rate is not None or report.correctness_rate is not None:
+            print(f"  groundedness      : {_pct(report.groundedness_rate)}     （裁判：答案是否只依据证据）")
+            print(f"  correctness       : {_pct(report.correctness_rate)}     （裁判：与参考答案事实是否一致）")
+            print(f"  裁判缓存命中       : {report.judge_cached} 题")
         print(f"  引用率             : {_pct(report.citation_rate)}     （非错库题里给出引用的比例）")
         print(f"  编造引用           : {report.unknown_citations} 处   （引用了不存在的 [En]，必须为 0）")
         print(f"  无依据率           : {_pct(report.ungrounded_rate)}     （编引用 / 该拒答却答了 / 挂了 grounded 却没引用）")

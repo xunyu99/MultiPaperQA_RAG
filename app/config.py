@@ -105,6 +105,12 @@ class Settings(BaseSettings):
     # 否则会把现有向量覆盖掉，且不可逆（EVAL_PLAN §4.3）。
     # 走环境变量就能切：CHROMA_COLLECTION=chunks_bge_m3 EMBEDDING_PROVIDER=local
     chroma_collection: str = "chunks"
+    # ---------- 评测裁判（M2）----------
+    # 裁判**单独选模型**，避免自评：生成走 DeepSeek，裁判走百炼的旗舰。
+    # 实测 qwen3.8-max / qwen3.8-flash 都可用且严格输出 JSON（EVAL_PLAN §6）。
+    # 2026-09-26 改用 flash：裁判要读整张证据卡、每题判两次，flash 更快更省。
+    # 注意 judge 的缓存 key 里**带模型名**，换模型等于旧判定全部失效（要重付这笔钱）。
+    judge_model: str = "qwen3.8-flash"
 
     # ---------- 切分 ----------
     chunk_target_tokens: int = 800
