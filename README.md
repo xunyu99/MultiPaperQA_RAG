@@ -1,7 +1,7 @@
 # MultiPaperQA_RAG · 多论文问答系统
 
 把一批 PDF 论文丢进去，用自然语言提问，回答带原文引用与图表。
-链路：MinerU 解析 → 结构化切分 → 混合检索（向量 + 关键词）→ 重排 → LangGraph 编排 → 带引用的回答。
+链路：MinerU 解析 → 结构化切分 → 混合检索（向量 + 关键词）→ 重排 → 带引用的回答。
 
 - 测什么、怎么对比、本地模型怎么落 见 [EVAL_PLAN.md](EVAL_PLAN.md)
 
@@ -75,7 +75,6 @@ http://127.0.0.1:8000/docs 是接口文档。
 | `app/ingest/` | MinerU 调用、结构化转换、章节树、切分、入库 |
 | `app/retrieval/` | 多路召回、RRF 融合、重排、Planner、充分性判断 |
 | `app/generation/` | 证据卡组装、生成、引用、多模态挂图 |
-| `app/graph/` | LangGraph 状态机 |
 | `app/api/` | FastAPI 接口 + 单页前端（`app/api/static/`） |
 | `app/eval/` | 评测集与指标 |
 | `scripts/` | 每一步的验收脚本 |
