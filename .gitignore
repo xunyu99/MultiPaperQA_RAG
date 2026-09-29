@@ -1,28 +1,86 @@
-# ---- 环境 ----
+# ============================================================
+# MultiPaperQA_RAG .gitignore
+# 原则：源码进仓库，环境 / 密钥 / 数据产物 / 大文件一律不进
+# ============================================================
+
+# ---- 密钥（绝对不能传）----
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# ---- 虚拟环境（约 1.3 GB，重建即可）----
 .venv/
 venv/
+env/
+.conda/
 
-# ---- Python ----
+# ---- Python 缓存与构建产物 ----
 __pycache__/
 *.py[cod]
+*$py.class
 *.egg-info/
+.eggs/
+build/
+dist/
+*.egg
+
+# ---- 测试 / 类型 / lint 缓存 ----
 .pytest_cache/
 .pytest_tmp*/
+.mypy_cache/
 .ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# ---- 评测产物（本地跑出来的，约 4 MB）----
 .eval_out/
 
-# ---- 密钥 ----
-.env
-.env.local
-
-# ---- 数据产物（保留占位文件）----
+# ---- 运行时数据与模型（约 6.6 GB，本地重新生成）----
 storage/*
 !storage/.gitkeep
-*.db
-*.zip
-*.log
 
-# ---- 编辑器 ----
+# 兜底：万一 storage 路径被改到别处，这些也拦掉
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.duckdb
+chroma/
+chroma_db/
+*.faiss
+*.index
+
+# 模型权重 / 解析中间件（.env 里的 MODEL_CACHE_DIR 可能指向别处）
+models/
+*.bin
+*.onnx
+*.pt
+*.pth
+*.h5
+*.gguf
+*.safetensors
+
+# ---- 原始语料（体积大且有版权，按需自备）----
+*.pdf
+*.zip
+*.tar
+*.tar.gz
+
+# ---- 日志与临时文件 ----
+*.log
+*.tmp
+*.bak
+~$*
+
+# ---- 编辑器 / 系统 ----
 .vscode/
 .idea/
 .DS_Store
+Thumbs.db
