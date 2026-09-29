@@ -3,9 +3,7 @@
 把一批 PDF 论文丢进去，用自然语言提问，回答带原文引用与图表。
 链路：MinerU 解析 → 结构化切分 → 混合检索（向量 + 关键词）→ 重排 → LangGraph 编排 → 带引用的回答。
 
-- 路线图、**做完了什么 / 还差什么** 见 [PLAN.md](PLAN.md)（进度在 §6；v1 八步 + Step 9 已完成）
 - 测什么、怎么对比、本地模型怎么落 见 [EVAL_PLAN.md](EVAL_PLAN.md)
-- 待办一律看 PLAN §6.2 —— 不测出问题不实现
 
 ## 能做什么
 
@@ -83,38 +81,14 @@ http://127.0.0.1:8000/docs 是接口文档。
 | `scripts/` | 每一步的验收脚本 |
 | `storage/` | PDF、MinerU 产物、向量库、数据库（不进 git） |
 
-## Git
+## 仓库约定
 
-仓库已经初始化，分支 `main`。`.gitignore` 挡住了不该入库的东西：`.venv/`、`__pycache__/`、
-`.pytest_cache/`、`.pytest_tmp*/`、`.eval_out/`、`.env`、`storage/*`（只留 `storage/.gitkeep`）、
-`*.db`、`*.zip`、`*.log`。
-
-```powershell
-git status                  # 改了哪些
-git diff                    # 具体改了什么
-git add .                 # 或只加指定文件：git add README.md app/api/main.py
-git commit -m "feat: 会话接口"
-git log --oneline -5        # 看最近几条提交
-```
-
-目前只有一个初始提交（`chore: 项目骨架与依赖清单`），**还没有远程仓库**。要备份或分享时，
-先在 GitHub 等平台建一个**空仓库**（别勾 README / .gitignore，否则会和本地提交打架），然后：
-
-```powershell
-git remote add origin <仓库地址>
-git push -u origin main     # 之后就是 git push
-```
-
-几条约定：
+`.gitignore` 挡住了不该入库的东西：`.venv/`、`__pycache__/`、各类测试与类型检查缓存、
+`.eval_out/`、`.env`、`storage/*`（只留 `storage/.gitkeep`）、`*.db`、`*.zip`、`*.log`。
 
 - **`storage/` 不进 git**：`app.db`、Chroma 向量库、MinerU 产物体积大且能重建，换机器后重跑
   `scripts.run_mineru` + `scripts.index_chunks` 就行。
 - **`.env` 不进 git**：里面有明文 key。换机器从 `.env.example` 复制，并把 `STORAGE_DIR` /
-  `DB_PATH` / `MODEL_CACHE_DIR` 三个绝对路径改成新位置。
+  `DB_PATH` / `MODEL_CACHE_DIR` 三个路径改成新位置。
 - 提交前扫一眼 `git status`，确认没有 `*.db` / `storage/` / `.env` 混进来。它们在 `.gitignore` 里，
   但要是曾经被 `git add -f` 强行跟过，得先 `git rm --cached <文件>` 才会真的忽略。
-
-本机 git 装在 `E:\工作\git-local\Git\cmd\git.exe`（v2.55），但 PATH 里那条
-`E:\工作\ams-platform\git-local\Git\cmd` 已经不存在了，所以直接敲 `git` 可能提示"不是内部或外部命令"。
-两个办法：把 `E:\工作\git-local\Git\cmd` 加回 PATH；或者用完整路径调用
-`& 'E:\工作\git-local\Git\cmd\git.exe' status`。
